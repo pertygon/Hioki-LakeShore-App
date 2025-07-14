@@ -4,6 +4,7 @@ import pyvisa
 import time
 import random
 from pyvisa import constants
+from lakeshore import Model335
 
 class MockLakeshore335:
     """Symulator kontrolera temperatury."""
@@ -18,6 +19,8 @@ class MockLakeshore335:
         current = self._target + random.uniform(-0.1, 0.1)
         print(f"[MOCK Lake] odczyt temperatury: {current:.2f} K")
         return current
+    def close(self):
+        pass
 
 class MockHioki3536:
     """Symulator miernika impedancji."""
@@ -38,42 +41,80 @@ class MockHioki3536:
         return data
 
 class Lakeshore335:
-    def __init__(self, resource_name):
-        rm = pyvisa.ResourceManager()
+    """
+    Sterownik Lake Shore Model 335 przez lake-shore-python-driver.
+    Metody:
+      set_temperature(T, channel=…)
+      get_temperature(channel=…)
+    Fallback: jeśli instrument nie obsługuje kanału !=1, używa kanału 1.
+    """
+
+    def __init__(self, resource_name, baud_rate=57600, timeout=2.0):
+        # Jeśli RS-232 przez VISA: resource_name typu 'ASRL10::INSTR'
         if resource_name.upper().startswith("ASRL"):
-            # USB→COM emuluje RS-232C @57600 baud, 7 data bits, odd parity
-            self.dev = rm.open_resource(
-                resource_name,
-                baud_rate=57600,
-                data_bits=7,
-                stop_bits=constants.StopBits.one,
-                parity=constants.Parity.odd
-            )
+            # wyciągamy numer portu COM z nazwy VISA
+            num = resource_name[4:resource_name.find("::")]
+            com_port = f"COM{num}"
+            self.dev = Model335(baud_rate, com_port=com_port, timeout=timeout)
         else:
-            self.dev = rm.open_resource(resource_name)
-        self.dev.timeout = 2000
-        self.dev.write_termination = '\r\n'
-        self.dev.read_termination  = '\r\n'
+            # GPIB / USB-TMC
+            self.dev = Model335(baud_rate, timeout=timeout)
+    def set_temperature(self, T, channel=2):
+        """
+        Ustawia setpoint T [K] na wyjściu `channel`.
+        Jeśli SETP dla podanego kanału zwróci błąd, powtórzy dla kanału 1.
+        """
+        try:
+            self.dev.set_control_setpoint(channel, T)
+            self.dev.set_heater_range(channel, 'LOW')
+        except Exception:
+            # fallback do kanału 1
+            self.dev.set_control_setpoint(1, T)
+            self.dev.set_heater_range(channel, 'LOW')
 
-    def set_temperature(self, T):
-        self.dev.write(f"SETP 1,{T:.2f}")
-
-    def get_temperature(self, retries=5, delay=0.2):
-        last = ""
-        for _ in range(retries):
-            resp = self.dev.query("KRDG? 1").strip()
-            last = resp
-            if resp:
-                try:
-                    return float(resp)
-                except ValueError:
-                    for part in resp.replace('+','').split(','):
-                        try:
-                            return float(part)
-                        except ValueError:
-                            continue
-            time.sleep(delay)
-        raise RuntimeError(f"Nie odczytano temperatury (ostatnia: {last!r})")
+    def disable_heater(self,channel=2):
+        """
+        Ustawia setpoint T [K] na wyjściu `channel`.
+        Jeśli SETP dla podanego kanału zwróci błąd, powtórzy dla kanału 1.
+        """
+        try:
+            self.dev.set_heater_range(channel, self.dev.HeaterRange.OFF)
+        except Exception:
+            # fallback do kanału 1
+            self.dev.set_heater_range(channel, self.dev.HeaterRange.OFF)
+    def enable_heater(self,channel=2):
+        """
+        Ustawia setpoint T [K] na wyjściu `channel`.
+        Jeśli SETP dla podanego kanału zwróci błąd, powtórzy dla kanału 1.
+        """
+        try:
+            self.dev.set_heater_range(channel, self.dev.HeaterRange.HIGH)
+        except Exception:
+            # fallback do kanału 1
+            self.dev.set_heater_range(channel, self.dev.HeaterRange.HIGH)
+    def get_temperature(self, channel=2):
+        """
+        Odczytuje temperaturę [K] z kanału `channel`.
+        Jeśli odczyt z kanału 2 się nie uda, pobiera z kanału 1.
+        """
+        try:
+            temp = self.dev.get_all_kelvin_reading()
+            return temp[1]
+        except Exception:
+            temp = self.dev.get_all_kelvin_reading()
+            return temp[0]
+    def get_heater_output(self, channel=2):
+        """
+        Zwraca procent mocy grzałki (0–100%) na zadanym kanale.
+        """
+        return self.dev.get_heater_output(channel)
+    def close(self):
+        """Zamknij port COM używany wewnętrznie przez lakeshore.Model335."""
+        try:
+            # lakeshore.GenericInstrument przechowuje pyserial.Serial w .device_serial
+            self.dev.device_serial.close()
+        except Exception:
+            pass
 
 class Hioki3536:
     def __init__(self, resource_name):
@@ -103,6 +144,7 @@ class Hioki3536:
         self.dev.write(f"FREQ {freq_hz:.0f}")
 
     def measure_all(self):
+        time.sleep(0.05)
         """
         Wyzwala pomiar i pobiera ostatni zestaw Phase,Cp,D,Rp
         z odpowiedzi MEASure? ALL (panele rozdzielone '/').
@@ -117,22 +159,27 @@ class Hioki3536:
         try:
             self.dev.query("*OPC?")
         except:
-            time.sleep(0.5)
+            pass
 
         # 3) pobierz wszystkie panele wyników
         resp = self.dev.query("MEASure?").strip()
+        print(resp)
         panels = resp.split('/')
         last = panels[-1]
         parts = [p.strip() for p in last.split(',')]
-
+        print(parts)
+        if(len(parts) > 4):
+            parts = parts[1:]
+        print("Po obcieciu")
+        print(parts)
         if len(parts) < 4:
             raise RuntimeError(f"Niepełne dane z MEASure?: {resp!r}")
 
         # poprawne przypisanie wartości:
-        phase = float(parts[1])
-        cp    = float(parts[2])
-        d     = float(parts[3])
-        rp    = float(parts[4])
+        phase = float(parts[0])
+        cp    = float(parts[1])
+        d     = float(parts[2])
+        rp    = float(parts[3])
 
         return {
             'Phase': phase,
