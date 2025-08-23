@@ -43,21 +43,16 @@ class MockHioki3536:
 class Lakeshore335:
     """
     Sterownik Lake Shore Model 335 przez lake-shore-python-driver.
-    Metody:
-      set_temperature(T, channel=…)
-      get_temperature(channel=…)
-    Fallback: jeśli instrument nie obsługuje kanału !=1, używa kanału 1.
+    Jeśli instrument nie obsługuje kanału !=1, używa kanału 1.
     """
 
     def __init__(self, resource_name, baud_rate=57600, timeout=2.0):
-        # Jeśli RS-232 przez VISA: resource_name typu 'ASRL10::INSTR'
         if resource_name.upper().startswith("ASRL"):
-            # wyciągamy numer portu COM z nazwy VISA
+            # wyciągam numer portu COM z nazwy VISA
             num = resource_name[4:resource_name.find("::")]
             com_port = f"COM{num}"
             self.dev = Model335(baud_rate, com_port=com_port, timeout=timeout)
         else:
-            # GPIB / USB-TMC
             self.dev = Model335(baud_rate, timeout=timeout)
     def set_temperature(self, T, channel=2):
         """
@@ -80,7 +75,6 @@ class Lakeshore335:
         try:
             self.dev.set_heater_range(channel, self.dev.HeaterRange.OFF)
         except Exception:
-            # fallback do kanału 1
             self.dev.set_heater_range(channel, self.dev.HeaterRange.OFF)
     def enable_heater(self,channel=2):
         """
@@ -90,7 +84,6 @@ class Lakeshore335:
         try:
             self.dev.set_heater_range(channel, self.dev.HeaterRange.HIGH)
         except Exception:
-            # fallback do kanału 1
             self.dev.set_heater_range(channel, self.dev.HeaterRange.HIGH)
     def get_temperature(self, channel=2):
         """
@@ -111,7 +104,6 @@ class Lakeshore335:
     def close(self):
         """Zamknij port COM używany wewnętrznie przez lakeshore.Model335."""
         try:
-            # lakeshore.GenericInstrument przechowuje pyserial.Serial w .device_serial
             self.dev.device_serial.close()
         except Exception:
             pass
@@ -133,7 +125,6 @@ class Hioki3536:
         self.dev.write_termination = '\r\n'
         self.dev.read_termination  = '\r\n'
 
-        # ustaw tryb CPD, ASCII, natychmiastowy trigger
         for cmd in ("FUNC 'CPD'", "TRIG:SOUR IMM", "FORM:DATA ASCII"):
             try:
                 self.dev.write(cmd)
@@ -170,8 +161,6 @@ class Hioki3536:
         print(parts)
         if(len(parts) > 4):
             parts = parts[1:]
-        print("Po obcieciu")
-        print(parts)
         if len(parts) < 4:
             raise RuntimeError(f"Niepełne dane z MEASure?: {resp!r}")
 

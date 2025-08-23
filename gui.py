@@ -10,15 +10,15 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox, QAbstractItemView, QSplashScreen
 )
 from PyQt5.QtCore import Qt, QThread
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QPixmap, QFont
 from instrument import Lakeshore335, Hioki3536, MockLakeshore335, MockHioki3536
 from measurement import SweepWorker
 
 class SweepApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Impedance Sweep")
-        self.resize(600, 580)
+        self.setWindowTitle("Program do wykonywania pomiarów Hioki i LakeShore")
+        self.resize(700, 300)
 
         # stan pomiaru
         self.lake       = None
@@ -84,13 +84,14 @@ class SweepApp(QWidget):
 
         layout.addLayout(params)
 
-        # heater
+        # Grzałka i pomiar
         heater = QHBoxLayout()
-        self.btn_heat_on  = QPushButton("Heater ON");  self.btn_heat_off = QPushButton("Heater OFF")
+        self.btn_heat_on  = QPushButton("Heater ON");  self.btn_heat_off = QPushButton("Heater OFF"); self.btn_hand_measure = QPushButton("Wykonaj pomiar ręcznie")
         self.btn_heat_on.setEnabled(False); self.btn_heat_off.setEnabled(False)
         self.btn_heat_on.clicked.connect(self._heater_on)
         self.btn_heat_off.clicked.connect(self._heater_off)
-        heater.addWidget(self.btn_heat_on); heater.addWidget(self.btn_heat_off)
+        self.btn_hand_measure.clicked.connect(self._manual_measure) # pomiar reczny
+        heater.addWidget(self.btn_heat_on); heater.addWidget(self.btn_heat_off); heater.addWidget(self.btn_hand_measure)
         layout.addLayout(heater)
 
         # sterowanie
@@ -111,6 +112,9 @@ class SweepApp(QWidget):
         # pasek + status
         self.progress   = QProgressBar()
         self.lbl_status = QLabel("Gotowy"); self.lbl_status.setAlignment(Qt.AlignCenter)
+        f = QFont(); f.setPointSize(40); f.setBold(True)
+        self.lbl_status.setFont(f)
+        self.lbl_status.setStyleSheet("border:1px solid #ccc; border-radius:8px; padding:8px;")
         layout.addWidget(self.progress); layout.addWidget(self.lbl_status)
 
         self.setLayout(layout)
@@ -126,7 +130,7 @@ class SweepApp(QWidget):
 
         rm = pyvisa.ResourceManager()
         resources = rm.list_resources()
-        lakes, hiokis = ["Mock"], []
+        lakes, hiokis = ["Symulowane urządzenie"], []
         for r in resources:
             try:
                 inst = rm.open_resource(r)
@@ -161,7 +165,7 @@ class SweepApp(QWidget):
             try: self.lake.close()
             except: pass
         res = self.cb_lake.currentText()
-        if res.startswith("Mock"):
+        if res.startswith("Symulowane urządzenie"):
             self.lake,ok = MockLakeshore335(),False
         else:
             self.lake,ok = Lakeshore335(res),True
@@ -169,12 +173,12 @@ class SweepApp(QWidget):
         self.btn_heat_off.setEnabled(ok)
 
     def _add_mock(self):
-        item = QListWidgetItem("Mock"); item.setData(Qt.UserRole,"Mock"); item.setSelected(True)
+        item = QListWidgetItem("Symulowane urządzenie"); item.setData(Qt.UserRole,"Symulowane urządzenie"); item.setSelected(True)
         self.lst_hioki.addItem(item)
 
     def _remove_mock(self):
         for it in self.lst_hioki.selectedItems():
-            if it.data(Qt.UserRole)=="Mock":
+            if it.data(Qt.UserRole)=="Symulowane urządzenie":
                 self.lst_hioki.takeItem(self.lst_hioki.row(it))
 
     def _load_ranges(self):
@@ -187,7 +191,9 @@ class SweepApp(QWidget):
 
     def _choose_folder(self):
         path = QFileDialog.getExistingDirectory(self,"Folder wyników")
-        if path: self.output_dir,path = path,path
+        if path:
+            self.output_dir = path
+            self.lbl_folder.setText(path)
 
     def _heater_on(self):
         try:
@@ -216,8 +222,8 @@ class SweepApp(QWidget):
         if not self.lake:
             QMessageBox.warning(self,"Błąd","Wybierz Lakeshore!"); self.lbl_status.setText("Gotowy"); self.measuring=False; return
         hioki = [it.text() for it in self.lst_hioki.selectedItems()]
-        if self.cb_lake.currentText()=="Mock" and not hioki:
-            QMessageBox.warning(self,"Błąd","Wybierz ≥1 Hioki lub Mock!")
+        if self.cb_lake.currentText()=="Symulowane urządzenie" and not hioki:
+            QMessageBox.warning(self,"Błąd","Wybierz ≥1 Hioki lub symulowane urządzenie!")
             self.lbl_status.setText("Gotowy"); self.measuring=False; return
         if not getattr(self,'temps',None) or not self.freqs:
             QMessageBox.warning(self,"Błąd","Wczytaj Excel!")
@@ -229,7 +235,7 @@ class SweepApp(QWidget):
         self.btn_pause.setChecked(False)
         self.btn_pause.setText("Pause")
 
-        hioki_objs = [(n, MockHioki3536() if n=="Mock" else Hioki3536(n)) for n in hioki]
+        hioki_objs = [(n, MockHioki3536() if n=="Symulowane urządzenie" else Hioki3536(n)) for n in hioki]
         self.worker = SweepWorker(
             lake=self.lake, hiokis=hioki_objs,
             temps=self.temps, freqs=self.freqs,
@@ -273,9 +279,54 @@ class SweepApp(QWidget):
         self.btn_pause.setChecked(False)
         self.btn_pause.setText("Pause")
         self.btn_stop .setEnabled(False)
+    def _manual_measure(self):
+        if not self.worker:
+            # utwórz tymczasowego worker’a do pomiaru ręcznego
+            hioki_objs = [(it.text(),
+                        MockHioki3536() if it.text().startswith("Symulowane")
+                        else Hioki3536(it.text()))
+                        for it in self.lst_hioki.selectedItems()]
+            if not hioki_objs:
+                QMessageBox.warning(self, "Błąd", "Nie wybrano żadnego Hioki.")
+                return
+
+            self.worker = SweepWorker(
+                lake=self.lake,
+                hiokis=hioki_objs,
+                temps=[],
+                freqs=getattr(self, "freqs", []),
+                stabilize_time=self.sb_stab.value(),
+                tol=self.ds_tol.value(),
+                offset=self.ds_off.value(),
+                output_dir=self.output_dir
+            )
+        try:
+            temp, results = self.worker.manual_measure()
+            self.lbl_status.setText(f"Ręczny pomiar zakończony przy T={temp:.2f} K")
+        except Exception as e:
+            QMessageBox.warning(self, "Błąd pomiaru", str(e))
 
 
 if __name__ == "__main__":
+    try:
+        import pyvisa
+        rm = pyvisa.ResourceManager()
+        _ = rm.list_resources()
+    except Exception as e:
+        app = QApplication(sys.argv)
+        QMessageBox.critical(
+            None,
+            "Brak oprogramowania VISA",
+            "Nie wykryto zainstalowanej biblioteki VISA.\n"
+            "Zainstaluj np. NI-VISA i uruchom program ponownie.\n\n"
+            f"Szczegóły: {e}"
+        )
+        sys.exit(1)
+    app = QApplication(sys.argv)
+    window = SweepApp()
+    window.show()
+    sys.exit(app.exec_())
+
     app = QApplication(sys.argv)
 
     # splash-screen z kółkiem kursora

@@ -35,7 +35,7 @@ class SweepWorker(QObject):
         total = len(self.temps) * len(self.freqs) * len(self.hiokis)
         step  = 0
 
-        # opcjonalnie włącz grzałkę
+        #włącz grzałkę
         try: self.lake.enable_heater()
         except: pass
 
@@ -47,7 +47,7 @@ class SweepWorker(QObject):
             self.status.emit(f"Setpoint {T:.2f} K")
             self.lake.set_temperature(T)
 
-            # przygotuj dane tylko dla tej T
+            # przygotuj dane tylko dla tej temperatury
             data_per = {name: [] for name,_ in self.hiokis}
 
             # czekaj aż temperatura ustabilizuje się przez self.stab sekund
@@ -120,3 +120,40 @@ class SweepWorker(QObject):
                 pass
         self.lake.set_temperature(300.0)       
         self.finished.emit()
+    def manual_measure(self):
+        """
+        Ręczny pomiar
+        """
+        try:
+            curr_temp = float(self.lake.get_temperature()) + self.offset
+        except Exception as e:
+            raise RuntimeError(f"Nie udało się odczytać temperatury: {e}")
+
+        results = {}
+        for name, meter in self.hiokis:
+            data = []
+            for f in self.freqs:
+                try:
+                    meter.set_frequency(f)
+                    meas = meter.measure_all()
+                    entry = {
+                        "Freq":  f,
+                        "Temp":  curr_temp,
+                        "Phase": meas["Phase"],
+                        "Cp":    meas["Cp"],
+                        "D":     meas["D"],
+                        "Rp":    meas["Rp"],
+                    }
+                    data.append(entry)
+                except Exception as e:
+                    print(f"[WARN] Pomiar {name} f={f} Hz nie powiódł się: {e}")
+            results[name] = data
+
+        # zapis CSV – osobny plik dla każdego Hioki
+        for name, rows in results.items():
+            folder = os.path.join(self.output_dir, name.replace("::", "_"))
+            os.makedirs(folder, exist_ok=True)
+            filename = os.path.join(folder, f"Ręczny_{curr_temp:.2f}.csv")
+            pd.DataFrame(rows).to_csv(filename, index=False)
+
+        return curr_temp, results
