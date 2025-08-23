@@ -107,7 +107,7 @@ class SweepWorker(QObject):
                 folder = os.path.join(self.output_dir, name.replace("::", "_"))
                 os.makedirs(folder, exist_ok=True)
                 df = pd.DataFrame(data_per[name])
-                filename = f"{T:.1f}.csv"
+                filename = f"{T}.csv"
                 df.to_csv(os.path.join(folder, filename), index=False)
 
         # po wszystkim (lub stop) – schłódź i wyłącz grzałkę
